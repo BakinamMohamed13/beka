@@ -1,57 +1,49 @@
 from fastapi import FastAPI, UploadFile, File
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
-from PIL import Image
-import numpy as np
-import io
-import pickle
+from fastapi.responses import JSONResponse
 import uvicorn
-
+import cv2
+import numpy as np
+import joblib
+from io import BytesIO
+from PIL import Image
+import os
 app = FastAPI()
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# CORS to allow requests from frontend
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Change if you have a specific URL
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Point to the model inside the 'models' folder
+model_path = os.path.join(BASE_DIR, "XGB-Tuned-balancedPalm.pkl")
+# Load your model
+model = joblib.load(model_path)
 
-# Load the pickle model
-with open("XGB-Tuned-balancedPalm.pkl", "rb") as f:  # Change the name if needed
-    model = pickle.load(f)
+# Define preprocessing and feature extraction
+def preprocess_image(image_data, target_size=(128, 128)):
+    image = Image.open(BytesIO(image_data)).convert('RGB')
+    image = image.resize(target_size)
+    image_np = np.array(image) / 255.0
+    return image_np
 
-# Image preprocessing
-def preprocess_image(image_data):
-    try:
-        image = Image.open(io.BytesIO(image_data)).convert("RGB")
-        image = image.resize((224, 224))  # Adjust size as per model's requirement
-        image_array = np.array(image) / 255.0  # Normalize to 0-1
-        flat = image_array.flatten().reshape(1, -1)  # Flatten to 1D
-        return flat
-    except Exception as e:
-        raise ValueError(f"Image processing error: {str(e)}")
+def extract_color_histogram(image, bins=(8, 8, 8)):
+    img = (image * 255).astype(np.uint8)
+    hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
+    hist = cv2.calcHist([hsv], [0, 1, 2], None, bins, [0, 256, 0, 256, 0, 256])
+    hist = cv2.normalize(hist, hist).flatten()
+    return hist.reshape(1, -1)
 
-# API Endpoint for prediction
 @app.post("/predict")
-async def predict_anemia(file: UploadFile = File(...)):
+async def predict(file: UploadFile = File(...)):
     try:
-        contents = await file.read()
-        processed_image = preprocess_image(contents)
-        prediction = model.predict(processed_image)
-        label = "Anemic" if prediction[0] == 1 else "Non-Anemic"
-        return {"label": label}
+        image_data = await file.read()
+        img = preprocess_image(image_data)
+        features = extract_color_histogram(img)
+        prob = model.predict_proba(features)[0]
+        label_index = int(np.argmax(prob))
+        confidence = float(prob[label_index]) * 100
+
+        class_labels = {1: "Non-Anemic", 0: "Anemic"}
+        result = {
+            "prediction": class_labels[label_index]
+        }
+        return JSONResponse(content=result)
+
     except Exception as e:
-        return {"error": f"Error: {str(e)}"}
-
-# Serve the HTML page for the frontend form
-@app.get("/")
-async def serve_html():
-    with open("index.html", "r") as f:
-        html_content = f.read()
-    return HTMLResponse(content=html_content)
-
-# Start the server when the script is run directly
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)  # Ensure port 8000 is used
+        return JSONResponse(status_code=500, content={"error": str(e)})
