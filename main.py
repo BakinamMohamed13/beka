@@ -11,7 +11,7 @@ app = FastAPI()
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Point to the model inside the 'models' folder
-model_path = os.path.join(BASE_DIR, "XGB-Tuned-balancedPalm.pkl")
+model_path = os.path.join(BASE_DIR, "RF-Tuned-balancedPalm.pkl")
 # Load your model
 model = joblib.load(model_path)
 
